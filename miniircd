@@ -1,7 +1,7 @@
 #! /usr/bin/env python2
 # Hey, Emacs! This is -*-python-*-.
 #
-# Copyright (C) 2003-2019 Joel Rosdahl
+# Copyright (C) 2003-2019 Joel Rosdahl // Modifications by Zulan
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 # USA
 #
-# Joel Rosdahl <joel@rosdahl.net>
+# original author of miniircd Joel Rosdahl <joel@rosdahl.net>
 
 import logging
 import os
@@ -32,6 +32,7 @@ import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from optparse import OptionParser
+from itertools import chain
 
 VERSION = "1.3"
 
@@ -50,6 +51,45 @@ else:
 
     def socket_to_buffer(buf):
         return buf
+
+from ctypes import *
+
+#gamename-gamekey
+gn_gk = {'civ4':        b'y3D9Hw',
+         'civ4bts':     b'Cs2iIq',
+         'civ4btsjp':   b'Cs2iIq',
+         'gmtest':      b'HA6zkS',
+         'gslive':      b'Xn221z'}
+
+# Based on http://aluigi.altervista.org/papers.htm#peerchat
+class GsPeerchat:
+    def __init__(self, chall=b"0" * 16, gamekey=b"Cs2iIq"):
+        self.i1 = 0
+        self.i2 = 0
+        self.crypt = bytearray(256)
+        assert(len(chall) == 16)
+        chall = bytearray(chall)
+        gamekey = bytearray(gamekey)
+        challenge = bytearray(16)
+        for i in range(0, 16):
+            challenge[i] = chall[i] ^ gamekey[i % len(gamekey)]
+        for i in range(0, 256):
+            self.crypt[i] = 255 - i
+        tl = 0
+        for i in range(0, 256):
+            tl = (tl + self.crypt[i] + challenge[i % 16]) % 256
+            self.crypt[tl], self.crypt[i] = self.crypt[i], self.crypt[tl]
+
+    def __call__(self, data):
+        # Python 3 only now
+        data = bytearray(data.encode())
+        for i in range(0, len(data)):
+            self.i1 = (self.i1 + 1) % 256
+            self.i2 = (self.i2 + self.crypt[self.i1]) % 256
+            self.crypt[self.i1], self.crypt[self.i2] = self.crypt[self.i2], self.crypt[self.i1]
+            t = (self.crypt[self.i1] + self.crypt[self.i2]) % 256
+            data[i] ^= self.crypt[t]
+        return bytes(data).decode()
 
 
 def create_directory(path):
@@ -123,6 +163,7 @@ class Channel(object):
 class Client(object):
     __linesep_regexp = re.compile(r"\r?\n")
     # The RFC limit for nicknames is 9 characters, but what the heck.
+    # in gs it is atleast 20
     __valid_nickname_regexp = re.compile(
         r"^[][\`_^{|}A-Za-z][][\`_^{|}A-Za-z0-9-]{0,50}$")
     __valid_channelname_regexp = re.compile(
@@ -135,12 +176,18 @@ class Client(object):
         self.nickname = None
         self.user = None
         self.realname = None
+
         if self.server.ipv6:
             (self.host, self.port, _, _) = socket.getpeername()
         else:
             (self.host, self.port) = socket.getpeername()
         if self.server.cloak:
             self.host = self.server.cloak
+
+        self.gamename = None
+        self.in_crypt = None
+        self.out_crypt = None
+
         self.__timestamp = time.time()
         self.__readbuffer = ""
         self.__writebuffer = ""
@@ -172,6 +219,12 @@ class Client(object):
         return len(self.__writebuffer)
 
     def __parse_read_buffer(self):
+        #DECODING DATA
+        #if client doesn't have gamename set then he doesnt need encoding
+        if self.gamename is not None and self.in_crypt is not None:
+            self.__readbuffer = self.in_crypt(self.__readbuffer)
+            #print "data decoded:",self.__readbuffer
+
         lines = self.__linesep_regexp.split(self.__readbuffer)
         self.__readbuffer = lines[-1]
         lines = lines[:-1]
@@ -227,6 +280,29 @@ class Client(object):
                 return
             self.user = arguments[0]
             self.realname = arguments[3]
+        elif command == "CRYPT":
+            if len(arguments) < 3:
+                print('number of arguments is less than 3')
+                return
+            self.message(":s 705 * {} {}".format("0" * 16, "0" * 16))
+            self.gamename = arguments[2]
+            try:
+                self.in_crypt = GsPeerchat(gamekey=gn_gk[self.gamename])
+                self.out_crypt = GsPeerchat(gamekey=gn_gk[self.gamename])
+            except KeyError:
+                print('Unknown game "{}" requestesd'.format(self.gamename))
+        elif command == "USRIP":
+            self.message(":s 302 :=+@"+self.host)
+        elif command == "LOGIN":
+            nick = arguments[1]
+            if server.get_client(nick):
+                self.reply("433 * %s :Nickname is already in use" % nick)
+            elif not self.__valid_nickname_regexp.match(nick):
+                self.reply("432 * %s :Erroneous nickname" % nick)
+            else:
+                self.nickname = nick
+                server.client_changed_nickname(self, None)
+                self.message(':s 707 {} 12345678 87654321'.format(nick))
         elif command == "QUIT":
             self.disconnect("Client quit")
             return
@@ -270,7 +346,19 @@ class Client(object):
             if for_join:
                 channel.add_member(self)
                 self.channels[irc_lower(channelname)] = channel
-                self.message_channel(channel, "JOIN", channelname, True)
+                # FIXME redundand logic
+                if channelname == "#GSP!civ4bts" \
+                        and (irc_lower("#GSP!civ4btsjp") in server.channels):
+                    channeljp = server.get_channel("#GSP!civ4btsjp")
+                    self.message_channel(channel, "JOIN", channelname, True)
+                    self.message_channel(channeljp, "JOIN", "#GSP!civ4btsjp", True)
+                elif channelname == "#GSP!civ4btsjp" \
+                        and (irc_lower("#GSP!civ4bts") in server.channels):
+                    channelbts = server.get_channel("#GSP!civ4bts")
+                    self.message_channel(channel, "JOIN", channelname, True)
+                    self.message_channel(channelbts, "JOIN", "#GSP!civ4bts", True)
+                else:
+                    self.message_channel(channel, "JOIN", channelname, True)
                 self.channel_log(channel, "joined", meta=True)
                 if channel.topic:
                     self.reply("332 %s %s :%s"
@@ -283,7 +371,19 @@ class Client(object):
             # Max length: reply prefix ":server_name(space)" plus CRLF in
             # the end.
             names_max_len = 512 - (len(server.name) + 2 + 2)
-            for name in sorted(x.nickname for x in channel.members):
+
+            if channelname == "#GSP!civ4bts" and (irc_lower("#GSP!civ4btsjp") in server.channels):
+                # if channel is title channel of bts then we send also users of btsjp channel
+                channeljp = server.get_channel("#GSP!civ4btsjp")
+                members = chain(channel.members, channeljp.members)
+            elif channelname == "#GSP!civ4btsjp" and (irc_lower("#GSP!civ4bts") in server.channels):
+                # send bts users to jp
+                channelbts = server.get_channel("#GSP!civ4bts")
+                members = chain(channel.members, channelbts.members)
+            else:
+                members = channel.members
+
+            for name in sorted(x.nickname for x in members):
                 if not names:
                     names = names_prefix + name
                 # Using >= to include the space between "names" and "name".
@@ -467,9 +567,16 @@ class Client(object):
                                % (self.nickname, channelname))
                 else:
                     channel = self.channels[irc_lower(channelname)]
-                    self.message_channel(
-                        channel, "PART", "%s :%s" % (channelname, partmsg),
-                        True)
+                    if channelname == "#GSP!civ4bts" and (irc_lower("#GSP!civ4btsjp") in server.channels):
+                        channeljp = server.get_channel("#GSP!civ4btsjp")
+                        self.message_channel(channel, "PART", "%s :%s" % (channelname, partmsg), True)
+                        self.message_channel(channeljp, "PART", "%s :%s" % ("#GSP!civ4btsjp", partmsg), True)
+                    elif channelname == "#GSP!civ4btsjp" and (irc_lower("#GSP!civ4bts") in server.channels):
+                        channelbts = server.get_channel("#GSP!civ4bts")
+                        self.message_channel(channel, "PART", "%s :%s" % (channelname, partmsg),True)
+                        self.message_channel(channelbts, "PART", "%s :%s" % ("#GSP!civ4bts", partmsg),True)
+                    else:
+                        self.message_channel(channel, "PART", "%s :%s" % (channelname, partmsg),True)
                     self.channel_log(channel, "left (%s)" % partmsg, meta=True)
                     del self.channels[irc_lower(channelname)]
                     server.remove_member_from_channel(self, channelname)
@@ -586,6 +693,7 @@ class Client(object):
         try:
             handler_table[command]()
         except KeyError:
+            print('unknown command received: {}'.format(command))
             self.reply("421 %s %s :Unknown command" % (self.nickname, command))
 
     def socket_readable_notification(self):
@@ -624,7 +732,10 @@ class Client(object):
         self.server.remove_client(self, quitmsg)
 
     def message(self, msg):
-        self.__writebuffer += msg + "\r\n"
+        msg += "\r\n"
+        if self.gamename is not None and self.out_crypt is not None:
+            msg = self.out_crypt(msg)
+        self.__writebuffer += msg
 
     def reply(self, msg):
         self.message(":%s %s" % (self.server.name, msg))
