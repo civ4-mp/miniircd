@@ -403,6 +403,16 @@ class Client(object):
                 self.reply(names)
             self.reply("366 %s %s :End of NAMES list"
                        % (self.nickname, channelname))
+            if self.server.channel_motd_path:
+                try:
+                    # TODO: Optimize, cache file content
+                    with open(self.server.channel_motd_path, "r") as motd_file:
+                        motd_lines = motd_file.readlines()
+                        for line in motd_lines:
+                            msg = ':%s %s %s %s' % ('Server', 'PRIVMSG', channelname, line)
+                            self.message(msg)
+                except IOError as err:
+                    self.server.print_error('Channel MOTD path cannot be read ({})'.format(err))
 
     def __command_handler(self, command, arguments):
         def away_handler():
@@ -844,6 +854,8 @@ class Server(object):
             self.ssl_pem_file = os.path.abspath(self.ssl_pem_file)
         # else: might exist in the chroot jail, so just continue
 
+        self.channel_motd_path = options.channel_motd
+
         if options.listen and self.ipv6:
             self.address = socket.getaddrinfo(
                     options.listen, None, proto=socket.IPPROTO_TCP)[0][4][0]
@@ -1120,6 +1132,11 @@ def main(argv):
         "--pid-file",
         metavar="X",
         help="write PID to file X")
+    op.add_option(
+        "--channel-motd",
+        metavar="X",
+        help="display file X as message of the day when a channel is joined"
+    )
     op.add_option(
         "-p", "--password",
         metavar="X",
