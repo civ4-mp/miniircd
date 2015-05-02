@@ -30,6 +30,8 @@ import string
 import sys
 import tempfile
 import time
+import logging
+import errno
 from datetime import datetime
 from optparse import OptionParser
 
@@ -173,19 +175,27 @@ class Client(object):
         return "%s!%s@%s" % (self.nickname, self.user, self.host)
     prefix = property(get_prefix)
 
+    def __str__(self):
+        return self.prefix
+
     def check_aliveness(self):
         now = time.time()
-        if self.__timestamp + 180 < now:
-            self.disconnect("ping timeout")
+        if self.__timestamp + self.server.ping_timeout < now:
+            text = 'ping timeout'
+            if self.server.debug:
+                text = 'ping timeout [{} - {} = {} > {}]'.format(now, self.__timestamp,
+                                                                 now - self.__timestamp,
+                                                                 self.server.ping_timeout)
+            self.disconnect(text)
             return
-        if not self.__sent_ping and self.__timestamp + 90 < now:
+        if not self.__sent_ping and self.__timestamp + self.server.ping_interval < now:
             if self.__handle_command == self.__command_handler:
                 # Registered.
                 self.message("PING :%s" % self.server.name)
                 self.__sent_ping = True
             else:
                 # Not registered.
-                self.disconnect("ping timeout")
+                self.disconnect("ping timeout [not registered]")
 
     def write_queue_size(self):
         return len(self.__writebuffer)
@@ -673,8 +683,7 @@ class Client(object):
     def socket_readable_notification(self):
         try:
             data = self.socket.recv(2 ** 10)
-            self.server.print_debug(
-                "[%s:%d] -> %r" % (self.host, self.port, data))
+            logging.debug("[%s:%d] -> %r", self.host, self.port, data)
             if not data:
                 self.disconnect('EOT')
             self.__readbuffer += data
@@ -683,43 +692,34 @@ class Client(object):
             self.__sent_ping = False
         except socket.error as err:
             if err.args[0] == errno.EAGAIN or err.args[0] == errno.EWOULDBLOCK:
-                self.server.print_info('[{}:{}] Nonblocking read failed, will retry: {}'.
-                                       format(self.host, self.port, err))
+                logging.info('[%s] Nonblocking read failed, will retry: %s', self, err)
             else:
-                self.server.print_info('[{}:{}] Nonblocking read failed hard, disconnect: {}'.
-                                       format(self.host, self.port, err))
+                logging.info('[%s] Nonblocking read failed hard, disconnect: %s', self, err)
                 self.disconnect(err)
 
     def socket_writable_notification(self):
         try:
             sent = self.socket.send(self.__writebuffer)
-            self.server.print_debug(
-                "[%s:%d] <- %r" % (
-                    self.host, self.port, self.__writebuffer[:sent]))
+            logging.debug("[%s] <- %r", self, self.__writebuffer[:sent])
             self.__writebuffer = self.__writebuffer[sent:]
         except socket.error as err:
             if err.args[0] == errno.EAGAIN or err.args[0] == errno.EWOULDBLOCK:
-                self.server.print_info('[{}:{}] Nonblocking send failed, will retry: {}'.
-                                       format(self.host, self.port, err))
+                logging.info('[%s] Nonblocking send failed, will retry: %s', self, err)
             else:
-                self.server.print_info('[{}:{}] Nonblocking send failed hard, disconnect: {}'.
-                                       format(self.host, self.port, err))
+                logging.info('[%s] Nonblocking send failed hard, disconnect: %s', self, err)
                 self.disconnect(err)
 
     def disconnect(self, quitmsg):
         self.message("ERROR :%s" % quitmsg)
-        self.server.print_info(
-            "Disconnected connection from %s:%s (%s)." % (
-                self.host, self.port, quitmsg))
+        logging.info("[%s] Disconnected (%s).", self, quitmsg)
         self.socket.close()
         self.server.remove_client(self, quitmsg)
 
     def message(self, msg):
+        logging.debug('[%s] -> %r', self, msg)
         msg += "\r\n"
         if self.gamename is not None and self.out_crypt is not None:
-            #print "Original msg"+msg
             msg = self.out_crypt(msg)
-            #print "Ecoded msg"+msg
         self.__writebuffer += msg
 
     def reply(self, msg):
@@ -780,6 +780,9 @@ class Client(object):
 
 
 class Server(object):
+    ping_timeout = 180
+    ping_interval = 90
+
     def __init__(self, options):
         self.ports = options.ports
         self.password = options.password
@@ -818,7 +821,7 @@ class Server(object):
         try:
             pid = os.fork()
             if pid > 0:
-                self.print_info("PID: %d" % pid)
+                logging.info("PID: %d" % pid)
                 sys.exit(0)
         except OSError:
             sys.exit(1)
@@ -852,19 +855,6 @@ class Server(object):
         else:
             return []
 
-    def print_info(self, msg):
-        if self.verbose:
-            print(msg)
-            sys.stdout.flush()
-
-    def print_debug(self, msg):
-        if self.debug:
-            print(msg)
-            sys.stdout.flush()
-
-    def print_error(self, msg):
-        sys.stderr.write("%s\n" % msg)
-
     def client_changed_nickname(self, client, oldnickname):
         if oldnickname:
             del self.nicknames[irc_lower(oldnickname)]
@@ -896,21 +886,20 @@ class Server(object):
             try:
                 s.bind((self.address, port))
             except socket.error as e:
-                self.print_error("Could not bind port %s: %s." % (port, e))
+                logging.error("Could not bind port %s: %s.", port, e)
                 sys.exit(1)
             s.listen(5)
             serversockets.append(s)
             del s
-            self.print_info("Listening on port %d." % port)
+            logging.info("Listening on port %d.", port)
         if self.chroot:
             os.chdir(self.chroot)
             os.chroot(self.chroot)
-            self.print_info("Changed root directory to %s" % self.chroot)
+            logging.info("Changed root directory to %s", self.chroot)
         if self.setuid:
             os.setgid(self.setuid[1])
             os.setuid(self.setuid[0])
-            self.print_info("Setting uid:gid to %s:%s"
-                            % (self.setuid[0], self.setuid[1]))
+            logging.info("Setting uid:gid to %s:%s", self.setuid[0], self.setuid[1])
         last_aliveness_check = time.time()
         while True:
             (iwtd, owtd, ewtd) = select.select(
@@ -934,13 +923,11 @@ class Server(object):
                                 certfile=self.ssl_pem_file,
                                 keyfile=self.ssl_pem_file)
                         except ssl.SSLError as e:
-                            self.print_error(
-                                "SSL error for connection from %s:%s: %s" % (
-                                    addr[0], addr[1], e))
+                            logging.error("SSL error for connection from %s:%s: %s",
+                                          addr[0], addr[1], e)
                             continue
                     self.clients[conn] = Client(self, conn)
-                    self.print_info("Accepted connection from %s:%s." % (
-                        addr[0], addr[1]))
+                    logging.info("Accepted connection from %s:%s.", addr[0], addr[1])
             for x in owtd:
                 if x in self.clients:  # client may have been disconnected
                     self.clients[x].socket_writable_notification()
@@ -1020,7 +1007,11 @@ def main(argv):
 
     (options, args) = op.parse_args(argv[1:])
     if options.debug:
+        logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
         options.verbose = True
+    else:
+        logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
+
     if options.ports is None:
         if options.ssl_pem_file is None:
             options.ports = "6667"
@@ -1063,7 +1054,7 @@ def main(argv):
     try:
         server.start()
     except KeyboardInterrupt:
-        server.print_error("Interrupted.")
+        logging.error("Interrupted.")
 
 
 main(sys.argv)
