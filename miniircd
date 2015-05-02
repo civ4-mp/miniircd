@@ -388,12 +388,21 @@ class Client(object):
 
                 else:
                     self.reply("353 %s = %s :%s"
-                           % (self.nickname,
-                              channelname,
-                              " ".join(sorted(x.nickname
-                                              for x in channel.members))))
-                self.reply("366 %s %s :End of NAMES list"
-                           % (self.nickname, channelname))
+                               % (self.nickname, channelname,
+                                  " ".join(sorted(x.nickname
+                                                  for x in channel.members))))
+                self.reply("366 %s %s :End of NAMES list" % (self.nickname, channelname))
+
+                if self.server.channel_motd_path:
+                    try:
+                        # TODO: Optimize, cache file content
+                        with open(self.server.channel_motd_path, "r") as motd_file:
+                            motd_lines = motd_file.readlines()
+                            for line in motd_lines:
+                                msg = ':%s %s %s %s' % ('Server', 'PRIVMSG', channelname, line)
+                                self.message(msg)
+                    except IOError as err:
+                        logging.warn('Channel MOTD path cannot be read (%s)', err)
 
         def list_handler():
             if len(arguments) < 1:
@@ -794,6 +803,7 @@ class Server(object):
         self.chroot = options.chroot
         self.setuid = options.setuid
         self.statedir = options.statedir
+        self.channel_motd_path = options.channel_motd
 
         if options.listen:
             self.address = socket.gethostbyname(options.listen)
@@ -972,6 +982,11 @@ def main(argv):
         "--motd",
         metavar="X",
         help="display file X as message of the day")
+    op.add_option(
+        "--channel-motd",
+        metavar="X",
+        help="display file X as message of the day when a channel is joined"
+    )
     op.add_option(
         "-s", "--ssl-pem-file",
         metavar="FILE",
