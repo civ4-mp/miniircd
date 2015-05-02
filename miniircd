@@ -29,6 +29,7 @@ import string
 import sys
 import tempfile
 import time
+import errno
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from optparse import OptionParser
@@ -203,17 +204,22 @@ class Client(object):
 
     def check_aliveness(self):
         now = time.time()
-        if self.__timestamp + 180 < now:
-            self.disconnect("ping timeout")
+        if self.__timestamp + self.server.ping_timeout < now:
+            text = 'ping timeout'
+            if self.server.debug:
+                text = 'ping timeout [{} - {} = {} > {}]'.format(now, self.__timestamp,
+                                                                 now - self.__timestamp,
+                                                                 self.server.ping_timeout)
+            self.disconnect(text)
             return
-        if not self.__sent_ping and self.__timestamp + 90 < now:
+        if not self.__sent_ping and self.__timestamp + self.server.ping_interval < now:
             if self.__handle_command == self.__command_handler:
                 # Registered.
                 self.message("PING :%s" % self.server.name)
                 self.__sent_ping = True
             else:
                 # Not registered.
-                self.disconnect("ping timeout")
+                self.disconnect("ping timeout [not registered]")
 
     def write_queue_size(self):
         return len(self.__writebuffer)
@@ -805,6 +811,9 @@ class Client(object):
 
 
 class Server(object):
+    ping_timeout = 180
+    ping_interval = 90
+
     def __init__(self, options):
         self.ports = options.ports
         self.password = options.password
@@ -914,18 +923,20 @@ class Server(object):
             return []
 
     def print_info(self, msg):
+        if self.logger:
+            self.logger.info(msg)
+            return
         if self.verbose:
             print(msg)
             sys.stdout.flush()
-        if self.logger:
-            self.logger.info(msg)
 
     def print_debug(self, msg):
+        if self.logger:
+            self.logger.debug(msg)
+            return
         if self.debug:
             print(msg)
             sys.stdout.flush()
-        if self.logger:
-            self.logger.debug(msg)
 
     def print_error(self, msg):
         sys.stderr.write("%s\n" % msg)
@@ -1009,6 +1020,7 @@ class Server(object):
         self.logger.addHandler(fh)
 
     def run(self, serversockets):
+        logging.info("Setting uid:gid to %s:%s", self.setuid[0], self.setuid[1])
         last_aliveness_check = time.time()
         while True:
             (iwtd, owtd, ewtd) = select.select(
