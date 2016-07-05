@@ -940,7 +940,7 @@ class Server(object):
                         self.clients[conn] = Client(self, conn)
                         logging.info("Accepted connection from %s:%s.", addr[0], addr[1])
                     except socket.error as err:
-                        del self.clients[conn]
+                        // DO NOT del self.clients[conn], if Client() raises, it wont be assigned!
                         logging.warning("socket error during connection setup from %s:%s: %s", addr[0], addr[1], err)
                         try:
                             conn.close()
