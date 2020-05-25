@@ -1063,11 +1063,13 @@ class Server(object):
                         self.clients[conn] = Client(self, conn)
                         self.print_info("Accepted connection from %s:%s." % (
                             addr[0], addr[1]))
-                    except socket.error:
+                    except socket.error as err:
+                        # DO NOT del self.clients[conn], if Client() raises, it wont be assigned!
+                        logging.warning("socket error during connection setup from %s:%s: %s", addr[0], addr[1], err)
                         try:
                             conn.close()
-                        except Exception:
-                            pass
+                        except socket.error as err:
+                            logging.warning("socket error when trying to close socket due to socket error for %s:%s: %s", addr[0], addr[1], err)
             for x in owtd:
                 if x in self.clients:  # client may have been disconnected
                     self.clients[x].socket_writable_notification()
