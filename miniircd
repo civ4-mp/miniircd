@@ -277,7 +277,8 @@ class Client(object):
                 self.reply_461("PASS")
             else:
                 if arguments[0] == server.password:
-                    self.__handle_command = self.__registration_handler
+                    # See https://github.com/python/mypy/issues/2427
+                    setattr(self, "__handle_command", self.__registration_handler)
                 else:
                     self.reply("464 :Password incorrect")
         elif command == "QUIT":
@@ -340,7 +341,8 @@ class Client(object):
                        % (self.nickname, server.name, VERSION))
             self.send_lusers()
             self.send_motd()
-            self.__handle_command = self.__command_handler
+            # See https://github.com/python/mypy/issues/2427
+            setattr(self, "__handle_command", self.__command_handler)
 
     def __send_names(self, arguments: List[str], for_join: bool = False) -> None:
         server = self.server
@@ -854,7 +856,7 @@ class Server(object):
     debug: bool
     channel_log_dir: Optional[str]
     chroot: Optional[str]
-    setuid: Optional[str]
+    setuid: Optional[List[int]]
     state_dir: Optional[str]
     log_file: Optional[str]
     log_max_bytes: int
@@ -1228,7 +1230,7 @@ def main(argv: List[str]) -> None:
     (options, args) = op.parse_args(argv[1:])
     if os.name != "posix":
         options.chroot = False
-        options.setuid = False
+        options.setuid = None
     if options.debug:
         options.verbose = True
     if options.ports is None:
