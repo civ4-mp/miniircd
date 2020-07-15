@@ -34,7 +34,7 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from optparse import OptionParser
 from itertools import chain
-from typing import Optional, Set, Dict, Callable, List
+from typing import Optional, Set, Dict, Callable, List, Iterable
 
 VERSION = "1.3"
 
@@ -46,8 +46,6 @@ def buffer_to_socket(msg: str) -> bytes:
 def socket_to_buffer(buf: bytes) -> str:
     return buf.decode(errors="ignore")
 
-from ctypes import *
-
 #gamename-gamekey
 gn_gk = {'civ4':        b'y3D9Hw',
          'civ4bts':     b'Cs2iIq',
@@ -55,9 +53,10 @@ gn_gk = {'civ4':        b'y3D9Hw',
          'gmtest':      b'HA6zkS',
          'gslive':      b'Xn221z'}
 
+
 # Based on http://aluigi.altervista.org/papers.htm#peerchat
 class GsPeerchat:
-    def __init__(self, chall: str = b"0" * 16, gamekey: bytes = b"Cs2iIq"):
+    def __init__(self, chall: bytes = b"0" * 16, gamekey: bytes = b"Cs2iIq"):
         self.i1 = 0
         self.i2 = 0
         self.crypt = bytearray(256)
@@ -125,7 +124,7 @@ class Channel(object):
 
     topic = property(get_topic, set_topic)
 
-    def get_key(self) -> str:
+    def get_key(self) -> Optional[str]:
         return self._key
 
     def set_key(self, value) -> None:
@@ -142,7 +141,7 @@ class Channel(object):
     def _read_state(self) -> None:
         if not (self._state_path and os.path.exists(self._state_path)):
             return
-        data = {}
+        data: Dict[str, str] = {}
 
         with open(self._state_path, "rb") as state_file:
             exec(state_file.read(), {}, data)
@@ -181,11 +180,11 @@ class Client(object):
     gamename: Optional[str]
     in_crypt: Optional[GsPeerchat]
     out_crypt: Optional[GsPeerchat]
-    __timestamp = float
+    __timestamp: float
     __readbuffer: str
     __writebuffer: str
     __sent_ping: bool
-    __handle_command: Callable[[str, List[str]], None]
+    __handle_command: Callable[["Client", str, List[str]], None]
 
     def __init__(self, server, client_socket):
         self.server = server
@@ -350,6 +349,7 @@ class Client(object):
             channelnames = arguments[0].split(",")
         else:
             channelnames = sorted(self.channels.keys())
+        keys: List # TODO why does List[Optional[str]] not work?
         if len(arguments) > 1:
             keys = arguments[1].split(",")
         else:
@@ -397,6 +397,7 @@ class Client(object):
             # the end.
             names_max_len = 512 - (len(server.name) + 2 + 2)
 
+            members: Iterable[Client]
             if channelname == "#GSP!civ4bts" and (irc_lower("#GSP!civ4btsjp") in server.channels):
                 # if channel is title channel of bts then we send also users of btsjp channel
                 channeljp = server.get_channel("#GSP!civ4btsjp")
@@ -458,6 +459,7 @@ class Client(object):
             self.__send_names(arguments, for_join=True)
 
         def list_handler() -> None:
+            channels: Iterable[Channel]
             if len(arguments) < 1:
                 channels = server.channels.values()
             else:
@@ -839,8 +841,8 @@ class Client(object):
 
 
 class Server(object):
-    ping_timeout: int = 180
-    ping_interval: int = 90
+    ping_timeout: float = 180
+    ping_interval: float = 90
     ports: List[int]
     password: Optional[str]
     ssl_pem_file: Optional[str]
@@ -850,20 +852,19 @@ class Server(object):
     debug: bool
     channel_log_dir: Optional[str]
     chroot: bool
-    setuid: bool
+    setuid: Optional[str]
     state_dir: Optional[str]
     log_file: Optional[str]
     log_max_bytes: int
     log_count: int
     logger: Optional[logging.Logger]
     cloak: Optional[str]
-    password: Optional[str]
-    channel_motd_path = Optional[str]
-    address = str
-    name = str
-    channels = Dict[str, Channel]
-    clients = Dict[socket.socket, Client]
-    nicknames = Dict[str, Client]
+    channel_motd_path: Optional[str]
+    address: str
+    name: str
+    channels: Dict[str, Channel]
+    clients: Dict[socket.socket, Client]
+    nicknames: Dict[str, Client]
 
     def __init__(self, options):
         self.ports = options.ports
@@ -952,13 +953,13 @@ class Server(object):
         os.dup2(dev_null.fileno(), sys.stderr.fileno())
         os.dup2(dev_null.fileno(), sys.stdin.fileno())
 
-    def get_client(self, nickname: str) -> None:
+    def get_client(self, nickname: str) -> Client:
         return self.nicknames.get(irc_lower(nickname))
 
-    def has_channel(self, name: str) -> None:
+    def has_channel(self, name: str) -> bool:
          return irc_lower(name) in self.channels
 
-    def get_channel(self, channelname: str) -> None:
+    def get_channel(self, channelname: str) -> Channel:
         if irc_lower(channelname) in self.channels:
             channel = self.channels[irc_lower(channelname)]
         else:
@@ -996,7 +997,7 @@ class Server(object):
         if self.logger:
             self.logger.error(msg)
 
-    def client_changed_nickname(self, client: Client, oldnickname: str) -> None:
+    def client_changed_nickname(self, client: Client, oldnickname: Optional[str]) -> None:
         if oldnickname:
             del self.nicknames[irc_lower(oldnickname)]
         self.nicknames[irc_lower(client.nickname)] = client
