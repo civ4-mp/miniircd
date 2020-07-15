@@ -410,6 +410,8 @@ class Client(object):
                 members = channel.members
 
             for name in sorted(x.nickname for x in members):
+                if name is None:
+                    continue
                 if not names:
                     names = names_prefix + name
                 # Using >= to include the space between "names" and "name".
@@ -629,7 +631,7 @@ class Client(object):
 
         def quit_handler() -> None:
             if len(arguments) < 1:
-                quitmsg = self.nickname
+                quitmsg = self.nickname or "???"
             else:
                 quitmsg = arguments[0]
             self.disconnect(quitmsg)
