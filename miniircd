@@ -1074,7 +1074,6 @@ class Server(object):
         self.logger.addHandler(fh)
 
     def run(self, serversockets: List[socket.socket]) -> None:
-        logging.info("Setting uid:gid to %s:%s", self.setuid[0], self.setuid[1])
         last_aliveness_check = time.time()
         while True:
             (iwtd, owtd, ewtd) = select.select(
