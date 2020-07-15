@@ -597,7 +597,7 @@ class Client(object):
             if len(arguments) > 1:
                 partmsg = arguments[1]
             else:
-                partmsg = self.nickname
+                partmsg = self.nickname or "???"
             for channelname in arguments[0].split(","):
                 if not valid_channel_re.match(channelname):
                     self.reply_403(channelname)
@@ -747,7 +747,7 @@ class Client(object):
             else:
                 self.server.print_info('[{}:{}] Nonblocking read failed hard, disconnect: {}'.
                                        format(self.host, self.port, err))
-                self.disconnect(err)
+                self.disconnect(str(err))
         if not data:
             self.disconnect('EOT')
         self.__readbuffer += socket_to_buffer(data)
@@ -769,7 +769,7 @@ class Client(object):
             else:
                 self.server.print_info('[{}:{}] Nonblocking send failed hard, disconnect: {}'.
                                        format(self.host, self.port, err))
-                self.disconnect(err)
+                self.disconnect(str(err))
 
     def disconnect(self, quitmsg: str) -> None:
         self.message("ERROR :%s" % quitmsg)
@@ -1002,6 +1002,7 @@ class Server(object):
     def client_changed_nickname(self, client: Client, oldnickname: Optional[str]) -> None:
         if oldnickname:
             del self.nicknames[irc_lower(oldnickname)]
+        assert(client.nickname is not None)
         self.nicknames[irc_lower(client.nickname)] = client
 
     def remove_member_from_channel(self, client: Client, channelname: str) -> None:
