@@ -1,4 +1,4 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python3
 # Hey, Emacs! This is -*-python-*-.
 #
 # Copyright (C) 2003-2019 Joel Rosdahl // Modifications by Zulan
@@ -34,24 +34,17 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from optparse import OptionParser
 from itertools import chain
+from typing import Optional, Set, Dict, Callable, List
 
 VERSION = "1.3"
 
 
-PY3 = sys.version_info[0] >= 3
+def buffer_to_socket(msg: str) -> bytes:
+    return msg.encode()
 
-if PY3:
-    def buffer_to_socket(msg):
-        return msg.encode()
 
-    def socket_to_buffer(buf):
-        return buf.decode(errors="ignore")
-else:
-    def buffer_to_socket(msg):
-        return msg
-
-    def socket_to_buffer(buf):
-        return buf
+def socket_to_buffer(buf: bytes) -> str:
+    return buf.decode(errors="ignore")
 
 from ctypes import *
 
@@ -64,7 +57,7 @@ gn_gk = {'civ4':        b'y3D9Hw',
 
 # Based on http://aluigi.altervista.org/papers.htm#peerchat
 class GsPeerchat:
-    def __init__(self, chall=b"0" * 16, gamekey=b"Cs2iIq"):
+    def __init__(self, chall: str = b"0" * 16, gamekey: bytes = b"Cs2iIq"):
         self.i1 = 0
         self.i2 = 0
         self.crypt = bytearray(256)
@@ -93,13 +86,20 @@ class GsPeerchat:
         return bytes(data).decode()
 
 
-def create_directory(path):
+def create_directory(path: str) -> None:
     if not os.path.isdir(path):
         os.makedirs(path)
 
 
 class Channel(object):
-    def __init__(self, server, name):
+    server: "Server"
+    name: str
+    members: Set["Client"]
+    _topic: str
+    _key: Optional[str]
+    _state_path: Optional[str]
+
+    def __init__(self, server: "Server", name: str):
         self.server = server
         self.name = name
         self.members = set()
@@ -113,33 +113,33 @@ class Channel(object):
         else:
             self._state_path = None
 
-    def add_member(self, client):
+    def add_member(self, client: "Client") -> None:
         self.members.add(client)
 
-    def get_topic(self):
+    def get_topic(self) -> str:
         return self._topic
 
-    def set_topic(self, value):
+    def set_topic(self, value: str) -> None:
         self._topic = value
         self._write_state()
 
     topic = property(get_topic, set_topic)
 
-    def get_key(self):
+    def get_key(self) -> str:
         return self._key
 
-    def set_key(self, value):
+    def set_key(self, value) -> None:
         self._key = value
         self._write_state()
 
     key = property(get_key, set_key)
 
-    def remove_client(self, client):
+    def remove_client(self, client: "Client") -> None:
         self.members.discard(client)
         if not self.members:
             self.server.remove_channel(self)
 
-    def _read_state(self):
+    def _read_state(self) -> None:
         if not (self._state_path and os.path.exists(self._state_path)):
             return
         data = {}
@@ -150,7 +150,7 @@ class Channel(object):
         self._topic = data.get("topic", "")
         self._key = data.get("key")
 
-    def _write_state(self):
+    def _write_state(self) -> None:
         if not self._state_path:
             return
         (fd, path) = tempfile.mkstemp(dir=os.path.dirname(self._state_path))
@@ -169,6 +169,23 @@ class Client(object):
         r"^[][\`_^{|}A-Za-z][][\`_^{|}A-Za-z0-9-]{0,50}$")
     __valid_channelname_regexp = re.compile(
         r"^[&#+!][^\x00\x07\x0a\x0d ,:]{0,50}$")
+
+    server: "Server"
+    socket: socket.socket
+    channels: Dict[str, Channel]
+    nickname: Optional[str]
+    user: Optional[str]
+    realname: Optional[str]
+    host: str
+    port: int
+    gamename: Optional[str]
+    in_crypt: Optional[GsPeerchat]
+    out_crypt: Optional[GsPeerchat]
+    __timestamp = float
+    __readbuffer: str
+    __writebuffer: str
+    __sent_ping: bool
+    __handle_command: Callable[[str, List[str]], None]
 
     def __init__(self, server, client_socket):
         self.server = server
@@ -198,11 +215,12 @@ class Client(object):
         else:
             self.__handle_command = self.__registration_handler
 
-    def get_prefix(self):
+    def get_prefix(self) -> str:
         return "%s!%s@%s" % (self.nickname, self.user, self.host)
+
     prefix = property(get_prefix)
 
-    def check_aliveness(self):
+    def check_aliveness(self) -> None:
         now = time.time()
         if self.__timestamp + self.server.ping_timeout < now:
             text = 'ping timeout'
@@ -221,10 +239,10 @@ class Client(object):
                 # Not registered.
                 self.disconnect("ping timeout [not registered]")
 
-    def write_queue_size(self):
+    def write_queue_size(self) -> int:
         return len(self.__writebuffer)
 
-    def __parse_read_buffer(self):
+    def __parse_read_buffer(self) -> None:
         #DECODING DATA
         #if client doesn't have gamename set then he doesnt need encoding
         if self.gamename is not None and self.in_crypt is not None:
@@ -253,7 +271,7 @@ class Client(object):
                         arguments.append(y[1])
             self.__handle_command(command, arguments)
 
-    def __pass_handler(self, command, arguments):
+    def __pass_handler(self, command: str, arguments: List[str]) -> None:
         server = self.server
         if command == "PASS":
             if len(arguments) == 0:
@@ -267,7 +285,7 @@ class Client(object):
             self.disconnect("Client quit")
             return
 
-    def __registration_handler(self, command, arguments):
+    def __registration_handler(self, command: str, arguments: List[str]) -> None:
         server = self.server
         if command == "NICK":
             if len(arguments) < 1:
@@ -325,7 +343,7 @@ class Client(object):
             self.send_motd()
             self.__handle_command = self.__command_handler
 
-    def __send_names(self, arguments, for_join=False):
+    def __send_names(self, arguments: List[str], for_join: bool = False) -> None:
         server = self.server
         valid_channel_re = self.__valid_channelname_regexp
         if len(arguments) > 0:
@@ -414,11 +432,11 @@ class Client(object):
                 except IOError as err:
                     self.server.print_error('Channel MOTD path cannot be read ({})'.format(err))
 
-    def __command_handler(self, command, arguments):
-        def away_handler():
+    def __command_handler(self, command: str, arguments: List[str]) -> None:
+        def away_handler() -> None:
             pass
 
-        def ison_handler():
+        def ison_handler() -> None:
             if len(arguments) < 1:
                 self.reply_461("ISON")
                 return
@@ -426,7 +444,7 @@ class Client(object):
             online = [n for n in nicks if server.get_client(n)]
             self.reply("303 %s :%s" % (self.nickname, " ".join(online)))
 
-        def join_handler():
+        def join_handler() -> None:
             if len(arguments) < 1:
                 self.reply_461("JOIN")
                 return
@@ -439,7 +457,7 @@ class Client(object):
                 return
             self.__send_names(arguments, for_join=True)
 
-        def list_handler():
+        def list_handler() -> None:
             if len(arguments) < 1:
                 channels = server.channels.values()
             else:
@@ -455,10 +473,10 @@ class Client(object):
                               len(channel.members), channel.topic))
             self.reply("323 %s :End of LIST" % self.nickname)
 
-        def lusers_handler():
+        def lusers_handler() -> None:
             self.send_lusers()
 
-        def mode_handler():
+        def mode_handler() -> None:
             if len(arguments) < 1:
                 self.reply_461("MODE")
                 return
@@ -513,13 +531,13 @@ class Client(object):
             else:
                 self.reply_403(targetname)
 
-        def motd_handler():
+        def motd_handler() -> None:
             self.send_motd()
 
-        def names_handler():
+        def names_handler() -> None:
             self.__send_names(arguments)
 
-        def nick_handler():
+        def nick_handler() -> None:
             if len(arguments) < 1:
                 self.reply("431 :No nickname given")
                 return
@@ -545,7 +563,7 @@ class Client(object):
                     % (oldnickname, self.user, self.host, self.nickname),
                     True)
 
-        def notice_and_privmsg_handler():
+        def notice_and_privmsg_handler() -> None:
             if len(arguments) == 0:
                 self.reply("411 %s :No recipient given (%s)"
                            % (self.nickname, command))
@@ -568,7 +586,7 @@ class Client(object):
                 self.reply("401 %s %s :No such nick/channel"
                            % (self.nickname, targetname))
 
-        def part_handler():
+        def part_handler() -> None:
             if len(arguments) < 1:
                 self.reply_461("PART")
                 return
@@ -598,23 +616,23 @@ class Client(object):
                     del self.channels[irc_lower(channelname)]
                     server.remove_member_from_channel(self, channelname)
 
-        def ping_handler():
+        def ping_handler() -> None:
             if len(arguments) < 1:
                 self.reply("409 %s :No origin specified" % self.nickname)
                 return
             self.reply("PONG %s :%s" % (server.name, arguments[0]))
 
-        def pong_handler():
+        def pong_handler() -> None:
             pass
 
-        def quit_handler():
+        def quit_handler() -> None:
             if len(arguments) < 1:
                 quitmsg = self.nickname
             else:
                 quitmsg = arguments[0]
             self.disconnect(quitmsg)
 
-        def topic_handler():
+        def topic_handler() -> None:
             if len(arguments) < 1:
                 self.reply_461("TOPIC")
                 return
@@ -640,7 +658,7 @@ class Client(object):
             else:
                 self.reply("442 %s :You're not on that channel" % channelname)
 
-        def wallops_handler():
+        def wallops_handler() -> None:
             if len(arguments) < 1:
                 self.reply_461("WALLOPS")
                 return
@@ -649,7 +667,7 @@ class Client(object):
                 client.message(":%s NOTICE %s :Global notice: %s"
                                % (self.prefix, client.nickname, message))
 
-        def who_handler():
+        def who_handler() -> None:
             if len(arguments) < 1:
                 return
             targetname = arguments[0]
@@ -663,7 +681,7 @@ class Client(object):
                 self.reply("315 %s %s :End of WHO list"
                            % (self.nickname, targetname))
 
-        def whois_handler():
+        def whois_handler() -> None:
             if len(arguments) < 1:
                 return
             username = arguments[0]
@@ -713,7 +731,7 @@ class Client(object):
             print('unknown command received: {}'.format(command))
             self.reply("421 %s %s :Unknown command" % (self.nickname, command))
 
-    def socket_readable_notification(self):
+    def socket_readable_notification(self) -> None:
         try:
             data = self.socket.recv(2 ** 10)
             self.server.print_debug(
@@ -733,7 +751,7 @@ class Client(object):
         self.__timestamp = time.time()
         self.__sent_ping = False
 
-    def socket_writable_notification(self):
+    def socket_writable_notification(self) -> None:
         try:
             sent = self.socket.send(buffer_to_socket(self.__writebuffer))
             self.server.print_debug(
@@ -749,7 +767,7 @@ class Client(object):
                                        format(self.host, self.port, err))
                 self.disconnect(err)
 
-    def disconnect(self, quitmsg):
+    def disconnect(self, quitmsg: str) -> None:
         self.message("ERROR :%s" % quitmsg)
         self.server.print_info(
             "Disconnected connection from %s:%s (%s)." % (
@@ -757,29 +775,29 @@ class Client(object):
         self.socket.close()
         self.server.remove_client(self, quitmsg)
 
-    def message(self, msg):
+    def message(self, msg: str) -> None:
         msg += "\r\n"
         if self.gamename is not None and self.out_crypt is not None:
             msg = self.out_crypt(msg)
         self.__writebuffer += msg
 
-    def reply(self, msg):
+    def reply(self, msg: str) -> None:
         self.message(":%s %s" % (self.server.name, msg))
 
-    def reply_403(self, channel):
+    def reply_403(self, channel: str) -> None:
         self.reply("403 %s %s :No such channel" % (self.nickname, channel))
 
-    def reply_461(self, command):
+    def reply_461(self, command: str) -> None:
         nickname = self.nickname or "*"
         self.reply("461 %s %s :Not enough parameters" % (nickname, command))
 
-    def message_channel(self, channel, command, message, include_self=False):
+    def message_channel(self, channel: Channel, command: str, message: str, include_self: bool = False) -> None:
         line = ":%s %s %s" % (self.prefix, command, message)
         for client in channel.members:
             if client != self or include_self:
                 client.message(line)
 
-    def channel_log(self, channel, message, meta=False):
+    def channel_log(self, channel: Channel, message: str, meta: bool = False) -> None:
         if not self.server.channel_log_dir:
             return
         if meta:
@@ -792,7 +810,7 @@ class Client(object):
         fp.write(format % (timestamp, self.nickname, message))
         fp.close()
 
-    def message_related(self, msg, include_self=False):
+    def message_related(self, msg: str, include_self: bool = False) -> None:
         clients = set()
         if include_self:
             clients.add(self)
@@ -803,11 +821,11 @@ class Client(object):
         for client in clients:
             client.message(msg)
 
-    def send_lusers(self):
+    def send_lusers(self) -> None:
         self.reply("251 %s :There are %d users and 0 services on 1 server"
                    % (self.nickname, len(self.server.clients)))
 
-    def send_motd(self):
+    def send_motd(self) -> None:
         server = self.server
         motdlines = server.get_motd_lines()
         if motdlines:
@@ -821,8 +839,31 @@ class Client(object):
 
 
 class Server(object):
-    ping_timeout = 180
-    ping_interval = 90
+    ping_timeout: int = 180
+    ping_interval: int = 90
+    ports: List[int]
+    password: Optional[str]
+    ssl_pem_file: Optional[str]
+    motdfile: Optional[str]
+    verbose: bool
+    ipv6: bool
+    debug: bool
+    channel_log_dir: Optional[str]
+    chroot: bool
+    setuid: bool
+    state_dir: Optional[str]
+    log_file: Optional[str]
+    log_max_bytes: int
+    log_count: int
+    logger: Optional[logging.Logger]
+    cloak: Optional[str]
+    password: Optional[str]
+    channel_motd_path = Optional[str]
+    address = str
+    name = str
+    channels = Dict[str, Channel]
+    clients = Dict[socket.socket, Client]
+    nicknames = Dict[str, Client]
 
     def __init__(self, options):
         self.ports = options.ports
@@ -874,7 +915,7 @@ class Server(object):
         if self.state_dir:
             create_directory(self.state_dir)
 
-    def make_pid_file(self, filename):
+    def make_pid_file(self, filename: str) -> None:
         try:
             fd = os.open(filename, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o644)
             os.write(fd, b"%i\n" % os.getpid())
@@ -883,13 +924,13 @@ class Server(object):
             self.print_error("Could not create PID file %r" % filename)
             sys.exit(1)
 
-    def remove_pid_file(self, filename):
+    def remove_pid_file(self, filename: str) -> None:
         try:
             os.remove(filename)
         except Exception:
             self.print_error("Could not remove PID file %r" % filename)
 
-    def daemonize(self):
+    def daemonize(self) -> None:
         try:
             pid = os.fork()
             if pid > 0:
@@ -911,13 +952,13 @@ class Server(object):
         os.dup2(dev_null.fileno(), sys.stderr.fileno())
         os.dup2(dev_null.fileno(), sys.stdin.fileno())
 
-    def get_client(self, nickname):
+    def get_client(self, nickname: str) -> None:
         return self.nicknames.get(irc_lower(nickname))
 
-    def has_channel(self, name):
-        return irc_lower(name) in self.channels
+    def has_channel(self, name: str) -> None:
+         return irc_lower(name) in self.channels
 
-    def get_channel(self, channelname):
+    def get_channel(self, channelname: str) -> None:
         if irc_lower(channelname) in self.channels:
             channel = self.channels[irc_lower(channelname)]
         else:
@@ -925,7 +966,7 @@ class Server(object):
             self.channels[irc_lower(channelname)] = channel
         return channel
 
-    def get_motd_lines(self):
+    def get_motd_lines(self) -> List[str]:
         if self.motdfile:
             try:
                 return open(self.motdfile).readlines()
@@ -934,7 +975,7 @@ class Server(object):
         else:
             return []
 
-    def print_info(self, msg):
+    def print_info(self, msg: str) -> None:
         if self.logger:
             self.logger.info(msg)
             return
@@ -942,7 +983,7 @@ class Server(object):
             print(msg)
             sys.stdout.flush()
 
-    def print_debug(self, msg):
+    def print_debug(self, msg: str) -> None:
         if self.logger:
             self.logger.debug(msg)
             return
@@ -950,22 +991,22 @@ class Server(object):
             print(msg)
             sys.stdout.flush()
 
-    def print_error(self, msg):
+    def print_error(self, msg: str) -> None:
         sys.stderr.write("%s\n" % msg)
         if self.logger:
             self.logger.error(msg)
 
-    def client_changed_nickname(self, client, oldnickname):
+    def client_changed_nickname(self, client: Client, oldnickname: str) -> None:
         if oldnickname:
             del self.nicknames[irc_lower(oldnickname)]
         self.nicknames[irc_lower(client.nickname)] = client
 
-    def remove_member_from_channel(self, client, channelname):
+    def remove_member_from_channel(self, client: Client, channelname: str) -> None:
         if irc_lower(channelname) in self.channels:
             channel = self.channels[irc_lower(channelname)]
             channel.remove_client(client)
 
-    def remove_client(self, client, quitmsg):
+    def remove_client(self, client: Client, quitmsg: str) -> None:
         client.message_related(":%s QUIT :%s" % (client.prefix, quitmsg))
         for x in client.channels.values():
             client.channel_log(x, "quit (%s)" % quitmsg, meta=True)
@@ -978,7 +1019,7 @@ class Server(object):
     def remove_channel(self, channel):
         del self.channels[irc_lower(channel.name)]
 
-    def start(self):
+    def start(self) -> None:
         serversockets = []
         for port in self.ports:
             s = socket.socket(socket.AF_INET6 if self.ipv6 else socket.AF_INET,
@@ -1011,7 +1052,7 @@ class Server(object):
                 self.logger.exception("Fatal exception")
             raise
 
-    def init_logging(self):
+    def init_logging(self) -> None:
         if not self.log_file:
             return
 
@@ -1031,7 +1072,7 @@ class Server(object):
         self.logger.setLevel(log_level)
         self.logger.addHandler(fh)
 
-    def run(self, serversockets):
+    def run(self, serversockets: List[socket.socket]) -> None:
         logging.info("Setting uid:gid to %s:%s", self.setuid[0], self.setuid[1])
         last_aliveness_check = time.time()
         while True:
@@ -1080,17 +1121,17 @@ class Server(object):
                 last_aliveness_check = now
 
 
-_maketrans = str.maketrans if PY3 else string.maketrans
+_maketrans = str.maketrans
 _ircstring_translation = _maketrans(
     string.ascii_lowercase.upper() + "[]\\^",
     string.ascii_lowercase + "{}|~")
 
 
-def irc_lower(s):
+def irc_lower(s: str) -> str:
     return s.translate(_ircstring_translation)
 
 
-def main(argv):
+def main(argv: List[str]) -> None:
     op = OptionParser(
         version=VERSION,
         description="miniircd is a small and limited IRC server.")
