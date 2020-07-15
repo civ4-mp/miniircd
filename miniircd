@@ -853,7 +853,7 @@ class Server(object):
     ipv6: bool
     debug: bool
     channel_log_dir: Optional[str]
-    chroot: bool
+    chroot: Optional[str]
     setuid: Optional[str]
     state_dir: Optional[str]
     log_file: Optional[str]
@@ -955,7 +955,7 @@ class Server(object):
         os.dup2(dev_null.fileno(), sys.stderr.fileno())
         os.dup2(dev_null.fileno(), sys.stdin.fileno())
 
-    def get_client(self, nickname: str) -> Client:
+    def get_client(self, nickname: str) -> Optional[Client]:
         return self.nicknames.get(irc_lower(nickname))
 
     def has_channel(self, name: str) -> bool:
