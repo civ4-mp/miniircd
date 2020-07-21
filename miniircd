@@ -33,10 +33,25 @@ from argparse import ArgumentParser, Namespace
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Any, Collection, Dict, List, Optional, Sequence, Set
+from typing import Iterable
+
+from prometheus_client import start_http_server, Counter, Gauge
 
 Socket = socket.socket
 
 VERSION = "2.0"
+
+
+class Metrics:
+    channel_users = Gauge(
+        "irc_channel_users", "Users in an IRC channel", labelnames=("channel",)
+    )
+    channel_messages_total = Counter(
+        "irc_channel_messages_total",
+        "Messages posted in an IRC channel",
+        labelnames=("channel",),
+    )
+    users = Gauge("irc_users", "Connected Users", labelnames=("game",))
 
 
 # GameSpy Encryption based on http://aluigi.altervista.org/papers.htm#peerchat
@@ -83,7 +98,7 @@ class GsDuplex:
     def __init__(self):
         self.__in: Optional[GsPeerchat] = None
         self.__out: Optional[GsPeerchat] = None
-        self.__gamename: Optional[str] = None
+        self.__game: Optional[str] = None
 
     def enable(self, gamename: str):
         """
@@ -106,13 +121,12 @@ class GsDuplex:
         return msg
 
     @classmethod
-    @property
     def games(cls) -> Iterable[str]:
         return tuple(cls.__gamekeys.keys())
 
     @property
     def game(self) -> Optional[str]:
-        return self.__gamename
+        return self.__game
 
 
 def create_directory(path: str) -> None:
@@ -138,6 +152,14 @@ class Channel:
             self._read_state()
         else:
             self._state_path = None
+
+        self._metric_users = Metrics.channel_users.labels(
+            channel=name.decode()
+        )
+        self._metric_users.set_function(lambda: len(self.members))
+        self.metric_messages = Metrics.channel_messages_total.labels(
+            channel=name.decode()
+        )
 
     def add_member(self, client: "Client") -> None:
         self.members.add(client)
@@ -230,6 +252,10 @@ class Client:
     @property
     def prefix(self) -> bytes:
         return b"%s!%s@%s" % (self.nickname, self.user, self.host)
+
+    @property
+    def game(self) -> Optional[str]:
+        return self.__gs.game
 
     def check_aliveness(self) -> None:
         now = time.time()
@@ -853,6 +879,7 @@ class Client:
         include_self: bool = False,
     ) -> None:
         line = b":%s %s %s" % (self.prefix, command, message)
+        channel.metric_messages.inc()
         for client in channel.members:
             if client != self or include_self:
                 client.message(line)
@@ -957,6 +984,20 @@ class Server:
             create_directory(self.channel_log_dir)
         if self.state_dir:
             create_directory(self.state_dir)
+
+        self._metrics: Dict[Optional[str], Gauge] = {
+            game: Metrics.users.labels(game=game) for game in GsDuplex.games()
+        }
+        self._metrics[None] = Metrics.users.labels(game="external")
+        for game, metric in self._metrics.items():
+            # this one weird capture trick
+            def c(game: Optional[str] = game) -> int:
+                return sum(
+                    1 if game == client.game else 0
+                    for client in self.clients.values()
+                )
+
+            metric.set_function(c)
 
     def make_pid_file(self, filename: str) -> None:
         try:
@@ -1260,6 +1301,9 @@ def main(argv: Sequence[str]) -> None:
     ap.add_argument(
         "--cloak", metavar="X", help="report X as the host for all clients"
     )
+    ap.add_argument(
+        "--prometheus", help="enable prometheus export on addr:port"
+    )
     if os.name == "posix":
         ap.add_argument(
             "--chroot",
@@ -1335,6 +1379,11 @@ def main(argv: Sequence[str]) -> None:
         server.daemonize()
     if args.pid_file:
         server.make_pid_file(args.pid_file)
+    if args.prometheus:
+        print("promi", args.prometheus)
+        addr, port = args.prometheus.split(":")
+        port = int(port)
+        start_http_server(port=port, addr=addr)
     try:
         server.start()
     except KeyboardInterrupt:
