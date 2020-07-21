@@ -420,6 +420,13 @@ class Client:
                 b"366 %s %s :End of NAMES list" % (self.nickname, channelname)
             )
 
+            # Civilization 4 client does not show MOTD. So we show it on the join instead
+            for line in server.get_motd_lines():
+                self.message(
+                    b":%s %s %s :%s"
+                    % (b"server", b"PRIVMSG", channelname, line.encode(),)
+                )
+
     def __command_handler(
         self, command: bytes, arguments: Sequence[bytes]
     ) -> None:
