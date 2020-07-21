@@ -18,6 +18,7 @@
 # USA
 #
 # Joel Rosdahl <joel@rosdahl.net>
+# Modifications for GameSpy by Zulan
 
 import logging
 import os
@@ -28,7 +29,6 @@ import string
 import sys
 import tempfile
 import time
-
 from argparse import ArgumentParser, Namespace
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -37,6 +37,82 @@ from typing import Any, Collection, Dict, List, Optional, Sequence, Set
 Socket = socket.socket
 
 VERSION = "2.0"
+
+
+# GameSpy Encryption based on http://aluigi.altervista.org/papers.htm#peerchat
+class GsPeerchat:
+    def __init__(self, chall: bytes = b"0" * 16, gamekey: bytes = b"Cs2iIq"):
+        self.i1 = 0
+        self.i2 = 0
+        self.crypt = bytearray(256)
+        assert len(chall) == 16
+        chall = bytearray(chall)
+        gamekey = bytearray(gamekey)
+        challenge = bytearray(16)
+        for i in range(0, 16):
+            challenge[i] = chall[i] ^ gamekey[i % len(gamekey)]
+        for i in range(0, 256):
+            self.crypt[i] = 255 - i
+        tl = 0
+        for i in range(0, 256):
+            tl = (tl + self.crypt[i] + challenge[i % 16]) % 256
+            self.crypt[tl], self.crypt[i] = self.crypt[i], self.crypt[tl]
+
+    def __call__(self, data: bytes) -> bytes:
+        # Python 3 only now
+        data = bytearray(data)
+        for i in range(0, len(data)):
+            self.i1 = (self.i1 + 1) % 256
+            self.i2 = (self.i2 + self.crypt[self.i1]) % 256
+            self.crypt[self.i1], self.crypt[self.i2] = (
+                self.crypt[self.i2],
+                self.crypt[self.i1],
+            )
+            t = (self.crypt[self.i1] + self.crypt[self.i2]) % 256
+            data[i] ^= self.crypt[t]
+        return bytes(data)
+
+
+class GsDuplex:
+    __gamekeys = {
+        "civ4": b"y3D9Hw",
+        "civ4bts": b"Cs2iIq",
+        "civ4btsjp": b"Cs2iIq",
+    }
+
+    def __init__(self):
+        self.__in: Optional[GsPeerchat] = None
+        self.__out: Optional[GsPeerchat] = None
+        self.__gamename: Optional[str] = None
+
+    def enable(self, gamename: str):
+        """
+        Enable GameSpy encryption
+        :raises KeyError when the game is not known
+        """
+        gamekey = self.__gamekeys[gamename]
+        self.__game = gamename
+        self.__in = GsPeerchat(gamekey=gamekey)
+        self.__out = GsPeerchat(gamekey=gamekey)
+
+    def decrypt(self, msg: bytes) -> bytes:
+        if self.__in:
+            msg = self.__in(msg)
+        return msg
+
+    def encrypt(self, msg: bytes) -> bytes:
+        if self.__out:
+            return self.__out(msg)
+        return msg
+
+    @classmethod
+    @property
+    def games(cls) -> Iterable[str]:
+        return tuple(cls.__gamekeys.keys())
+
+    @property
+    def game(self) -> Optional[str]:
+        return self.__gamename
 
 
 def create_directory(path: str) -> None:
@@ -149,6 +225,8 @@ class Client:
         else:
             self.__handle_command = self.__registration_handler
 
+        self.__gs = GsDuplex()
+
     @property
     def prefix(self) -> bytes:
         return b"%s!%s@%s" % (self.nickname, self.user, self.host)
@@ -231,6 +309,36 @@ class Client:
         elif command == b"QUIT":
             self.disconnect("Client quit")
             return
+
+        # GameSpy specific commands
+        elif command == b"CRYPT":
+            if len(arguments) < 3:
+                self.reply_461(b"CRYPT")
+                return
+            gamename = arguments[2]
+            self.message(b":s 705 * %s %s" % (b"0" * 16, b"0" * 16))
+            try:
+                self.__gs.enable(gamename.decode())
+            except KeyError:
+                self.server.print_info(
+                    f"Requested CRYPT for unknown game {gamename.decode()}"
+                )
+        elif command == b"USRIP":
+            self.message(b":s 302 :=+@" + self.host)
+        elif command == b"LOGIN":
+            if len(arguments) != 3:
+                self.reply_461(b"LOGIN")
+            # the first is a number, I observed "17" not sure what it means
+            _, nick, password_hash = arguments
+            if server.get_client(nick):
+                self.reply(b"433 * %s :Nickname is already in use" % nick)
+            elif not self.__valid_nickname_regexp.match(nick):
+                self.reply(b"432 * %s :Erroneous nickname" % nick)
+            else:
+                self.nickname = nick
+                server.client_changed_nickname(self, None)
+                self.message(b":s 707 %s 12345678 87654321" % nick)
+
         if self.nickname and self.user:
             self.reply(b"001 %s :Hi, welcome to IRC" % self.nickname)
             self.reply(
@@ -685,6 +793,8 @@ class Client:
             data = b""
             quitmsg = str(e)
         if data:
+            data = self.__gs.decrypt(data)
+
             self.__readbuffer += data
             self.__parse_read_buffer()
             self.__timestamp = time.time()
@@ -713,7 +823,7 @@ class Client:
         self.server.remove_client(self, quitmsg.encode())
 
     def message(self, msg: bytes) -> None:
-        self.__writebuffer += msg + b"\r\n"
+        self.__writebuffer += self.__gs.encrypt(msg + b"\r\n")
 
     def reply(self, msg: bytes) -> None:
         self.message(b":%s %s" % (self.server.name, msg))
@@ -723,6 +833,9 @@ class Client:
 
     def reply_461(self, command: bytes) -> None:
         nickname = self.nickname or b"*"
+        self.server.print_info(
+            f"Client {nickname.decode()} provided not enough arguments for {command.decode()}"
+        )
         self.reply(b"461 %s %s :Not enough parameters" % (nickname, command))
 
     def message_channel(
