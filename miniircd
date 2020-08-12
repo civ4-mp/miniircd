@@ -1380,7 +1380,6 @@ def main(argv: Sequence[str]) -> None:
     if args.pid_file:
         server.make_pid_file(args.pid_file)
     if args.prometheus:
-        print("promi", args.prometheus)
         addr, port = args.prometheus.split(":")
         port = int(port)
         start_http_server(port=port, addr=addr)
