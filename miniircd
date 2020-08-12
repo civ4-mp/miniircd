@@ -153,12 +153,18 @@ class Channel:
         else:
             self._state_path = None
 
+        # Don't collect metrics for every single game
+        # they have names like '#gsp!civ4bts!mlhdcdq0cm'
+        if name.decode().count("!") < 2:
+            metric_channel_name = name.decode()
+        else:
+            metric_channel_name = "ingame"
         self._metric_users = Metrics.channel_users.labels(
-            channel=name.decode()
+            channel=metric_channel_name
         )
         self._metric_users.set_function(lambda: len(self.members))
         self.metric_messages = Metrics.channel_messages_total.labels(
-            channel=name.decode()
+            channel=metric_channel_name
         )
 
     def add_member(self, client: "Client") -> None:
