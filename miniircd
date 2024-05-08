@@ -792,13 +792,14 @@ class Client:
                     b"401 %s %s :No such nick" % (self.nickname, username)
                 )
 
+        # Some stuff disabled that we don't need and want for the civ4 server
         handler_table = {
             b"AWAY": away_handler,
             b"ISON": ison_handler,
             b"JOIN": join_handler,
             b"LIST": list_handler,
             b"LUSERS": lusers_handler,
-            b"MODE": mode_handler,
+            # b"MODE": mode_handler,
             b"MOTD": motd_handler,
             b"NAMES": names_handler,
             b"NICK": nick_handler,
@@ -808,8 +809,8 @@ class Client:
             b"PONG": pong_handler,
             b"PRIVMSG": notice_and_privmsg_handler,
             b"QUIT": quit_handler,
-            b"TOPIC": topic_handler,
-            b"WALLOPS": wallops_handler,
+            # b"TOPIC": topic_handler,
+            # b"WALLOPS": wallops_handler,
             b"WHO": who_handler,
             b"WHOIS": whois_handler,
         }
